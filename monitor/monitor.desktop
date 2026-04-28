@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Monitor PC-ESP32
+Comment=Monitor de hardware que envia dados via serial para ESP32
+Exec=/usr/local/bin/monitor-pc-esp32
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+X-GNOME-Autostart-enabled=true
