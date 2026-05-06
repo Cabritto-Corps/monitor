@@ -1,4 +1,5 @@
 #include "serial_parser.h"
+#include "touch_driver.h"
 #include "ui.h"
 
 #include "driver/gpio.h"
@@ -192,6 +193,7 @@ static void uart_task(void *arg) {
 void app_main(void) {
     nvs_flash_init();
     display_init();
+    touch_driver_init();
     uart_init();
     lvgl_init();
 

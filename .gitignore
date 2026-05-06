@@ -1,2 +1,4 @@
 monitor/monitor
 monitor/obj/
+esp/build/
+esp/managed_components/

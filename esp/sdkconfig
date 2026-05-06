@@ -713,6 +713,21 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
+# XPT2046
+#
+# default:
+CONFIG_XPT2046_Z_THRESHOLD=400
+# default:
+# CONFIG_XPT2046_INTERRUPT_MODE is not set
+# default:
+# CONFIG_XPT2046_VREF_ON_MODE is not set
+# default:
+CONFIG_XPT2046_CONVERT_ADC_TO_COORDS=y
+# default:
+# CONFIG_XPT2046_ENABLE_LOCKING is not set
+# end of XPT2046
+
+#
 # Compiler options
 #
 # default:
@@ -3427,6 +3442,15 @@ CONFIG_CU_DIAGNOSTICS_COLOR_ALWAYS=y
 # default:
 # CONFIG_CU_GCC_STRING_1BYTE_ALIGN is not set
 # end of CMake Utilities
+
+#
+# ESP LCD TOUCH
+#
+# default:
+CONFIG_ESP_LCD_TOUCH_MAX_POINTS=5
+# default:
+CONFIG_ESP_LCD_TOUCH_MAX_BUTTONS=1
+# end of ESP LCD TOUCH
 
 #
 # LVGL configuration
