@@ -10,12 +10,12 @@
 #include "esp_lcd_panel_ops.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "lvgl.h"
 #include "nvs_flash.h"
 #include <string.h>
 
-/* ---- Pin definitions (matching working Arduino code) ---- */
 #define PIN_MOSI     23
 #define PIN_MISO     19
 #define PIN_CLK      18
@@ -27,39 +27,45 @@
 #define LCD_HOST     SPI3_HOST
 #define LCD_PCLK_HZ  (20 * 1000 * 1000)
 
-/* ---- UART for PC communication (UART0 = USB serial, matches Arduino Serial) ---- */
 #define UART_PORT    UART_NUM_0
 #define UART_TX      1
 #define UART_RX      3
 #define UART_BAUD    115200
 #define UART_BUF_SZ  256
 
-/* ---- Display ---- */
 #define SCREEN_W     320
 #define SCREEN_H     240
 #define DRAW_BUF_LINES (SCREEN_H / 4)
 
 static esp_lcd_panel_handle_t panel_handle = NULL;
+static lv_disp_drv_t disp_drv;
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
+
+static QueueHandle_t data_queue = NULL;
 static bool connected = false;
 static int64_t last_data_time = 0;
 
-/* ---- LVGL flush callback (RGB565 -> BGR565 conversion) ---- */
-static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
-                          lv_color_t *color_map) {
-    uint16_t w = area->x2 - area->x1 + 1;
-    uint16_t h = area->y2 - area->y1 + 1;
-
-    esp_lcd_panel_draw_bitmap(panel_handle, area->x1, area->y1,
-                              area->x1 + w, area->y1 + h,
-                              color_map);
-    lv_disp_flush_ready(drv);
+static bool on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                 esp_lcd_panel_io_event_data_t *edata,
+                                 void *user_ctx)
+{
+    lv_disp_flush_ready((lv_disp_drv_t *)user_ctx);
+    return false;
 }
 
-/* ---- Display init ---- */
-static void display_init(void) {
+static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
+                          lv_color_t *color_map)
+{
+    uint16_t w = area->x2 - area->x1 + 1;
+    uint16_t h = area->y2 - area->y1 + 1;
+    esp_lcd_panel_draw_bitmap(panel_handle, area->x1, area->y1,
+                              area->x1 + w, area->y1 + h, color_map);
+}
+
+static void display_init(void)
+{
     spi_bus_config_t buscfg = {
         .sclk_io_num = PIN_CLK,
         .mosi_io_num = PIN_MOSI,
@@ -79,8 +85,8 @@ static void display_init(void) {
         .lcd_param_bits = 8,
         .spi_mode = 0,
         .trans_queue_depth = 10,
-        .on_color_trans_done = NULL,
-        .user_ctx = NULL,
+        .on_color_trans_done = on_color_trans_done,
+        .user_ctx = &disp_drv,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &io_handle));
@@ -100,17 +106,10 @@ static void display_init(void) {
 
     gpio_set_direction(PIN_BACKLIGHT, GPIO_MODE_OUTPUT);
     gpio_set_level(PIN_BACKLIGHT, 1);
-
-    uint16_t *test = heap_caps_malloc(SCREEN_W * SCREEN_H * 2, MALLOC_CAP_DMA);
-    if (test) {
-        memset(test, 0x00, SCREEN_W * SCREEN_H * 2);
-        esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, SCREEN_W, SCREEN_H, test);
-        heap_caps_free(test);
-    }
 }
 
-/* ---- UART init ---- */
-static void uart_init(void) {
+static void uart_init(void)
+{
     uart_config_t uart_cfg = {
         .baud_rate = UART_BAUD,
         .data_bits = UART_DATA_8_BITS,
@@ -125,8 +124,8 @@ static void uart_init(void) {
                         UART_BUF_SZ * 2, 0, NULL, 0);
 }
 
-/* ---- LVGL init ---- */
-static void lvgl_init(void) {
+static void lvgl_init(void)
+{
     lv_init();
 
     int buf_pixels = SCREEN_W * DRAW_BUF_LINES;
@@ -136,7 +135,6 @@ static void lvgl_init(void) {
 
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, buf_pixels);
 
-    static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
     disp_drv.hor_res = SCREEN_W;
     disp_drv.ver_res = SCREEN_H;
@@ -145,32 +143,22 @@ static void lvgl_init(void) {
     lv_disp_drv_register(&disp_drv);
 }
 
-/* ---- UART reader task ---- */
-static void uart_task(void *arg) {
+static void uart_task(void *arg)
+{
     (void)arg;
     char buf[UART_BUF_SZ + 1];
     int buf_idx = 0;
 
     while (1) {
         uint8_t ch;
-        int len = uart_read_bytes(UART_PORT, &ch, 1,
-                                  pdMS_TO_TICKS(20));
+        int len = uart_read_bytes(UART_PORT, &ch, 1, pdMS_TO_TICKS(20));
         if (len > 0) {
             if (ch == '\n' || ch == '\r') {
                 if (buf_idx > 0) {
                     buf[buf_idx] = '\0';
                     MonitorData data;
                     if (serial_parser_parse(buf, &data) == 0) {
-                        const char *names[MAX_PROCESSES];
-                        const char *rams[MAX_PROCESSES];
-                        int n = data.process_count;
-                        for (int i = 0; i < n; i++) {
-                            names[i] = data.processes[i].name;
-                            rams[i] = data.processes[i].ram_mb;
-                        }
-                        ui_update_metrics(data.cpu_pct, data.ram_pct,
-                                          names, rams, n);
-                        connected = true;
+                        xQueueSend(data_queue, &data, 0);
                         last_data_time = esp_timer_get_time();
                     }
                     buf_idx = 0;
@@ -179,33 +167,48 @@ static void uart_task(void *arg) {
                 buf[buf_idx++] = (char)ch;
             }
         }
-
-        if (connected &&
-            esp_timer_get_time() - last_data_time > 5000000LL) {
-            connected = false;
-            ui_show_disconnected();
-        }
-
         vTaskDelay(1);
     }
 }
 
-void app_main(void) {
+void app_main(void)
+{
     nvs_flash_init();
     display_init();
-    touch_driver_init();
     uart_init();
     lvgl_init();
+    touch_driver_init();
 
     ui_init();
+
+    data_queue = xQueueCreate(4, sizeof(MonitorData));
 
     xTaskCreate(uart_task, "uart", 4096, NULL, 5, NULL);
 
     last_data_time = esp_timer_get_time();
 
     while (1) {
-        lv_tick_inc(1);
+        MonitorData data;
+        if (xQueueReceive(data_queue, &data, 0) == pdTRUE) {
+            const char *names[MAX_PROCESSES];
+            const char *rams[MAX_PROCESSES];
+            int n = data.process_count;
+            for (int i = 0; i < n; i++) {
+                names[i] = data.processes[i].name;
+                rams[i] = data.processes[i].ram_mb;
+            }
+            ui_update_metrics(data.cpu_pct, data.ram_pct, names, rams, n);
+            connected = true;
+            last_data_time = esp_timer_get_time();
+        }
+
+        if (connected && esp_timer_get_time() - last_data_time > 5000000LL) {
+            connected = false;
+            ui_show_disconnected();
+        }
+
+        lv_tick_inc(5);
         lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
